@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 #define T 1 // period
-#define SAMPLING_SIZE 100
+#define SAMPLING_SIZE 50 // pelo menos 20 amostras
 #define BUFFER_SIZE (SAMPLING_SIZE+1)
 
 typedef struct ring_buffer
@@ -41,9 +41,11 @@ void write(float data, ring_buffer *s)
     }
 }
 
+float readBuffer(ring_buffer *s); // PERCORRE O BUFFER DE ACORDO COM O HEAD E O TAIL
+
 float plantOutput_abs(float y, float kTs)
 {
-    return (T*T - 6*T*kTs + 6*kTs*kTs)*y;
+    return (T*T - 6*T*kTs + 6*kTs*kTs)*y;  // MUDAR PARA PREENCHER O VETOR DINAMICAMENTE NO INICIO
 }
 
 float estimatorOutput_abs(float u, float kTs)
@@ -72,6 +74,8 @@ float estimator(float *u, float *y, float a)
     return (60.0*sum_y + 30.0*sum_u*a)/T/T/T/T/T;
 }
 
+float updateEstimator(); // ATUALIZA ESTIMADOR UTILIZANDO NOVA AMOSTRA, EXCLUINDO MAIS VELHA
+
 void systemTEST(float u, float *y)
 {
     *y += u/100;
@@ -83,12 +87,11 @@ int main()
     float output = 0.0;
     float vecPlant[SAMPLING_SIZE] = {};
     float vecEstimator[SAMPLING_SIZE] = {};
-    
-    srand(25);
+
     for(int i = 0; i < SAMPLING_SIZE; i++)
     {
-        vecPlant[i] = rand()%5;
-        vecEstimator[i] = rand()%5;
+        vecPlant[i] = 0.0;
+        vecEstimator[i] = 0.0;
     } 
     printf("%f\n", estimator(vecPlant, vecEstimator, 1.0));
 
