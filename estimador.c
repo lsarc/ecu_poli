@@ -3,7 +3,11 @@
 
 #define T 1 // period
 #define SAMPLING_SIZE 50 // pelo menos 20 amostras
-#define BUFFER_SIZE (SAMPLING_SIZE+1)
+#define BUFFER_SIZE 51
+
+const float Ts = (float)T/(float)SAMPLING_SIZE; // sample period
+const float absPlant = 60.0/T/T/T/T/T;
+const float absOutput = 30.0/T/T/T/T/T;
 
 typedef struct ring_buffer
 {
@@ -41,40 +45,55 @@ void write(float data, ring_buffer *s)
     }
 }
 
-float readBuffer(ring_buffer *s); // PERCORRE O BUFFER DE ACORDO COM O HEAD E O TAIL
-
-float plantOutput_abs(float y, float kTs)
+float fillAbsoluteVectors(float plantVector[SAMPLING_SIZE], float estimatorVector[SAMPLING_SIZE])
 {
-    return (T*T - 6*T*kTs + 6*kTs*kTs)*y;  // MUDAR PARA PREENCHER O VETOR DINAMICAMENTE NO INICIO
-}
-
-float estimatorOutput_abs(float u, float kTs)
-{
-    return (T - kTs)*(T - kTs)*kTs*kTs*u;
-}
-
-float estimator(float *u, float *y, float a)
-{
-    float Ts = (float)T/(float)SAMPLING_SIZE; // sample period
-    float kTs;  // sample weighting
-    float sum_y = 0.0;
-    float sum_u = 0.0;
-    for(int k = 1; k < SAMPLING_SIZE-1; k++)
+    float kTs;
+    float kTs2;
+    for (int k = 1; k < SAMPLING_SIZE-1; k++)
     {
-        kTs = k*Ts;
-        sum_y += plantOutput_abs(y[k], kTs);
-        sum_u += estimatorOutput_abs(u[k], kTs);
+        kTs = k*Ts; // sample weighting
+        kTs2 = kTs*kTs;
+        plantVector[k] = (T*T - 6*T*kTs + 6*kTs2)*absPlant*Ts;
+        estimatorVector[k] = ((T - kTs)*(T - kTs)*kTs2)*absOutput*Ts;
+    }
+    plantVector[0] = T*T*absPlant*Ts/2;
+    estimatorVector[0] = 0;
+    kTs = SAMPLING_SIZE*Ts;
+    kTs2 = kTs*kTs;
+    plantVector[SAMPLING_SIZE-1] = (T*T - 6*T*kTs + 6*kTs2)*absPlant*Ts/2;
+    estimatorVector[SAMPLING_SIZE-1] = ((T - kTs)*(T - kTs)*kTs2)*absOutput*Ts/2;
+}
+
+float estimator(ring_buffer *Plant, ring_buffer *Estimator, float plantVector[SAMPLING_SIZE], float estimatorVector[SAMPLING_SIZE], float a)
+{
+    float sumPlant = 0.0;
+    float sumEstimator = 0.0;
+    float samplePlant;
+    float sampleEstimator;
+    int k = Plant->head+1;
+    for(int n = 1; n < SAMPLING_SIZE-1; n++) // SEPARAR DOIS CALCULOS ?
+    {
+        if (k > SAMPLING_SIZE - 1)
+        {
+            k = 0;
+        }
+        samplePlant = Plant->contents[k];
+        sampleEstimator = Estimator->contents[k];
+        sumPlant += plantVector[n]*samplePlant;
+        sumEstimator += estimatorVector[n]*sampleEstimator;
+        k++;  
     }
     
-    sum_y *= Ts;
-    sum_u *= Ts;
-    sum_y += (plantOutput_abs(y[SAMPLING_SIZE-1], T) + plantOutput_abs(y[0], 0))*Ts/2;
-    sum_u += (estimatorOutput_abs(u[SAMPLING_SIZE-1], T) + estimatorOutput_abs(u[0], 0))*Ts/2;
-    
-    return (60.0*sum_y + 30.0*sum_u*a)/T/T/T/T/T;
+    return sumPlant + sumEstimator*a;
 }
 
-float updateEstimator(); // ATUALIZA ESTIMADOR UTILIZANDO NOVA AMOSTRA, EXCLUINDO MAIS VELHA
+float updateSamples(ring_buffer *Plant, ring_buffer *Estimator, float newPlant, float newEstimator)
+{
+    read(Plant);
+    read(Estimator);
+    write(newPlant, Plant);
+    write(newEstimator, Estimator);
+}
 
 void systemTEST(float u, float *y)
 {
@@ -85,17 +104,13 @@ int main()
 {
     float setPoint = 10.0;
     float output = 0.0;
-    float vecPlant[SAMPLING_SIZE] = {};
-    float vecEstimator[SAMPLING_SIZE] = {};
 
-    for(int i = 0; i < SAMPLING_SIZE; i++)
-    {
-        vecPlant[i] = 0.0;
-        vecEstimator[i] = 0.0;
-    } 
-    printf("%f\n", estimator(vecPlant, vecEstimator, 1.0));
+    float plantVector[SAMPLING_SIZE];
+    float estimatorVector[SAMPLING_SIZE];
 
-    /* ring_buffer bufferPlant;
+    fillAbsoluteVectors(plantVector, estimatorVector);
+
+    ring_buffer bufferPlant;
     bufferPlant.head = 0;
     bufferPlant.tail = 0;
 
@@ -108,7 +123,15 @@ int main()
         write(0.0, &bufferPlant);
         write(0.0, &bufferEstimator);
     }
+
+    for(int i = 0; i < 20; i++)
+    {
+        updateSamples(&bufferPlant, &bufferEstimator, 0.0, 0.0);
+    }
     
+
+    printf("Estimador Calculado: %f\n", estimator(&bufferPlant, &bufferEstimator, plantVector, estimatorVector, 1.0));
+ /* 
     float u;
     for(int i = 0; i < 50; i++)
     {
@@ -119,8 +142,8 @@ int main()
         write(output, &bufferPlant);
         write(u, &bufferEstimator);
         printf("%f\n", output);
-    } */
-
+    }
+ */
     
     
     return 0;
