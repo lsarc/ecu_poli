@@ -24,7 +24,7 @@ const static char *TAG = "EXAMPLE";
 
 #define tempo_ms 1000
 
-#define EXAMPLE_PCNT_HIGH_LIMIT 100
+#define EXAMPLE_PCNT_HIGH_LIMIT 1000
 #define EXAMPLE_PCNT_LOW_LIMIT  -100
 
 #define EXAMPLE_CONT_GPIO_EDGE 14
@@ -69,31 +69,22 @@ const static char *TAG = "EXAMPLE";
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_11
 
 static int adc_raw[2][10];
-static uint64_t time_count;
 
-static void example_pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, gptimer_handle_t timer)
+static bool example_timer_on_alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
-    // send event data to queue, from this interrupt callback
-    ESP_ERROR_CHECK(gptimer_get_raw_count(timer, &time_count));
-    ESP_ERROR_CHECK(gptimer_set_raw_count(timer, 0));
-    ESP_ERROR_CHECK(pcnt_unit_clear_count(unit));
-
+    BaseType_t high_task_awoken = pdFALSE;
+    QueueHandle_t queue = (QueueHandle_t)user_ctx;
+    // Retrieve the count value from event data
+    // Optional: send the event data to other task by OS queue
+    // Do not introduce complex logics in callbacks
+    // Suggest dealing with event data in the main loop, instead of in this callback
+    xQueueSendFromISR(queue, &(edata->count_value), &high_task_awoken);
+    // return whether we need to yield at the end of ISR
+    return high_task_awoken == pdTRUE;
 }
-
 
 void app_main(void)
 {
-    gptimer_handle_t gptimer = NULL;
-    gptimer_config_t timer_config = {
-        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
-        .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 1 * 1000 * 1000, // 1KHz, 1 tick = 1ms
-    };
-    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
-
-    ESP_ERROR_CHECK(gptimer_enable(gptimer));
-    ESP_ERROR_CHECK(gptimer_start(gptimer));
-
     //CONTADOR PULSOS
 
     ESP_LOGI(TAG, "install pcnt unit");
@@ -122,24 +113,39 @@ void app_main(void)
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
 
-    ESP_LOGI(TAG, "add watch points and register callbacks");
-    int watch_points[] = {EXAMPLE_PCNT_HIGH_LIMIT};
-    for (size_t i = 0; i < sizeof(watch_points) / sizeof(watch_points[0]); i++) {
-        ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, watch_points[i]));
-    }
-    pcnt_event_callbacks_t cbs = {
-        .on_reach = example_pcnt_on_reach,
+    // TIMER
+
+    gptimer_handle_t gptimer = NULL;
+    gptimer_config_t timer_config = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000, // 1KHz, 1 tick = 1ms
     };
-    ESP_ERROR_CHECK(pcnt_unit_register_event_callbacks(pcnt_unit, &cbs, gptimer));
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
 
+    gptimer_alarm_config_t alarm_config = {
+        .reload_count = 0, // counter will reload with 0 on alarm event
+        .alarm_count = 1000000, // period = 1s @resolution 1MHz
+        .flags.auto_reload_on_alarm = true, // enable auto-reload
+    };
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
 
+    gptimer_event_callbacks_t cbs = {
+        .on_alarm = example_timer_on_alarm_cb, // register user callback
+    };
+    QueueHandle_t queue = xQueueCreate(10, sizeof(int));
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, queue));
+    ESP_ERROR_CHECK(gptimer_enable(gptimer));
+    ESP_ERROR_CHECK(gptimer_start(gptimer));
+    
     ESP_LOGI(TAG, "enable pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
     ESP_LOGI(TAG, "clear pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
     ESP_LOGI(TAG, "start pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
-    
+
+
     //LED
 
     ledc_timer_config_t ledc_timer = {
@@ -182,8 +188,8 @@ void app_main(void)
 
     //LOOP PRINCIPAL
 
-    float rpm = 0.0;
     int dim = 0;
+    int pulse_count = 0;
     while (1) {
 
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
@@ -191,11 +197,12 @@ void app_main(void)
         dim = (adc_raw[0][0]-1430)/10;
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*16));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-        rpm = (float)time_count/1000000;
-        rpm = (float)EXAMPLE_PCNT_HIGH_LIMIT*60/rpm;
-        ESP_LOGI(TAG, "%f RPM", rpm);
-
-        
+        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(1000))) {
+            ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+            ESP_LOGI(TAG, "%d RPM", pulse_count*60);
+            pcnt_unit_clear_count(pcnt_unit);
+        } 
+      
         vTaskDelay(pdMS_TO_TICKS(tempo_ms));
     }
 
