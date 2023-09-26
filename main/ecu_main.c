@@ -16,9 +16,19 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "driver/pulse_cnt.h"
+#include "driver/gptimer.h"
 
 
 const static char *TAG = "EXAMPLE";
+
+#define tempo_ms 1000
+
+#define EXAMPLE_PCNT_HIGH_LIMIT 100
+#define EXAMPLE_PCNT_LOW_LIMIT  -100
+
+#define EXAMPLE_CONT_GPIO_EDGE 14
+#define EXAMPLE_CONT_GPIO_LEVEL 14
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -59,13 +69,78 @@ const static char *TAG = "EXAMPLE";
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_11
 
 static int adc_raw[2][10];
-static int voltage[2][10];
-static bool example_adc_calibration_init(adc_unit_t unit, adc_atten_t atten, adc_cali_handle_t *out_handle);
-static void example_adc_calibration_deinit(adc_cali_handle_t handle);
+static uint64_t time_count;
+
+static void example_pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, gptimer_handle_t timer)
+{
+    // send event data to queue, from this interrupt callback
+    ESP_ERROR_CHECK(gptimer_get_raw_count(timer, &time_count));
+    ESP_ERROR_CHECK(gptimer_set_raw_count(timer, 0));
+    ESP_ERROR_CHECK(pcnt_unit_clear_count(unit));
+
+}
 
 
 void app_main(void)
 {
+    gptimer_handle_t gptimer = NULL;
+    gptimer_config_t timer_config = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1 * 1000 * 1000, // 1KHz, 1 tick = 1ms
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
+
+    ESP_ERROR_CHECK(gptimer_enable(gptimer));
+    ESP_ERROR_CHECK(gptimer_start(gptimer));
+
+    //CONTADOR PULSOS
+
+    ESP_LOGI(TAG, "install pcnt unit");
+    pcnt_unit_config_t unit_config = {
+        .high_limit = EXAMPLE_PCNT_HIGH_LIMIT,
+        .low_limit = EXAMPLE_PCNT_LOW_LIMIT,
+    };
+    pcnt_unit_handle_t pcnt_unit = NULL;
+    ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit));
+
+    ESP_LOGI(TAG, "set glitch filter");
+    pcnt_glitch_filter_config_t filter_config = {
+        .max_glitch_ns = 1000,
+    };
+    ESP_ERROR_CHECK(pcnt_unit_set_glitch_filter(pcnt_unit, &filter_config));
+
+    ESP_LOGI(TAG, "install pcnt channels");
+    pcnt_chan_config_t chan_a_config = {
+        .edge_gpio_num = EXAMPLE_CONT_GPIO_EDGE,
+        .level_gpio_num = EXAMPLE_CONT_GPIO_LEVEL,
+    };
+    pcnt_channel_handle_t pcnt_chan_a = NULL;
+    ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_a_config, &pcnt_chan_a));
+  
+    ESP_LOGI(TAG, "set edge and level actions for pcnt channels");
+    ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
+    ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
+
+    ESP_LOGI(TAG, "add watch points and register callbacks");
+    int watch_points[] = {EXAMPLE_PCNT_HIGH_LIMIT};
+    for (size_t i = 0; i < sizeof(watch_points) / sizeof(watch_points[0]); i++) {
+        ESP_ERROR_CHECK(pcnt_unit_add_watch_point(pcnt_unit, watch_points[i]));
+    }
+    pcnt_event_callbacks_t cbs = {
+        .on_reach = example_pcnt_on_reach,
+    };
+    ESP_ERROR_CHECK(pcnt_unit_register_event_callbacks(pcnt_unit, &cbs, gptimer));
+
+
+    ESP_LOGI(TAG, "enable pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
+    ESP_LOGI(TAG, "clear pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
+    ESP_LOGI(TAG, "start pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
+    
+    //LED
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
@@ -88,6 +163,8 @@ void app_main(void)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
 
+    //LEITURA ADC
+
     //-------------ADC1 Init---------------//
     adc_oneshot_unit_handle_t adc1_handle;
     adc_oneshot_unit_init_cfg_t init_config1 = {
@@ -103,114 +180,27 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN1, &config));
 
-    //-------------ADC1 Calibration Init---------------//
-    adc_cali_handle_t adc1_cali_handle = NULL;
-    bool do_calibration1 = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC_ATTEN, &adc1_cali_handle);
+    //LOOP PRINCIPAL
 
-
-#if EXAMPLE_USE_ADC2
-    //-------------ADC2 Init---------------//
-    adc_oneshot_unit_handle_t adc2_handle;
-    adc_oneshot_unit_init_cfg_t init_config2 = {
-        .unit_id = ADC_UNIT_2,
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config2, &adc2_handle));
-
-    //-------------ADC2 Calibration Init---------------//
-    adc_cali_handle_t adc2_cali_handle = NULL;
-    bool do_calibration2 = example_adc_calibration_init(ADC_UNIT_2, EXAMPLE_ADC_ATTEN, &adc2_cali_handle);
-
-    //-------------ADC2 Config---------------//
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc2_handle, EXAMPLE_ADC2_CHAN0, &config));
-#endif  //#if EXAMPLE_USE_ADC2
-
+    float rpm = 0.0;
+    int dim = 0;
     while (1) {
+
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
-        if (do_calibration1) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw[0][0], &voltage[0][0]));
-            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, voltage[0][0]);
-        }
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, adc_raw[0][0]));
+        dim = (adc_raw[0][0]-1430)/10;
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*16));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        rpm = (float)time_count/1000000;
+        rpm = (float)EXAMPLE_PCNT_HIGH_LIMIT*60/rpm;
+        ESP_LOGI(TAG, "%f RPM", rpm);
+
+        
+        vTaskDelay(pdMS_TO_TICKS(tempo_ms));
     }
 
     //Tear Down
     ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
-    if (do_calibration1) {
-        example_adc_calibration_deinit(adc1_cali_handle);
-    }
 
-#if EXAMPLE_USE_ADC2
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc2_handle));
-    if (do_calibration2) {
-        example_adc_calibration_deinit(adc2_cali_handle);
-    }
-#endif //#if EXAMPLE_USE_ADC2
 }
 
-
-/*---------------------------------------------------------------
-        ADC Calibration
----------------------------------------------------------------*/
-static bool example_adc_calibration_init(adc_unit_t unit, adc_atten_t atten, adc_cali_handle_t *out_handle)
-{
-    adc_cali_handle_t handle = NULL;
-    esp_err_t ret = ESP_FAIL;
-    bool calibrated = false;
-
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    if (!calibrated) {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
-        adc_cali_curve_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
-    }
-#endif
-
-#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    if (!calibrated) {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Line Fitting");
-        adc_cali_line_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
-        if (ret == ESP_OK) {
-            calibrated = true;
-        }
-    }
-#endif
-
-    *out_handle = handle;
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Calibration Success");
-    } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-        ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
-    } else {
-        ESP_LOGE(TAG, "Invalid arg or no memory");
-    }
-
-    return calibrated;
-}
-
-static void example_adc_calibration_deinit(adc_cali_handle_t handle)
-{
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
-
-#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
-#endif
-}
