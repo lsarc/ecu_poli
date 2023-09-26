@@ -71,7 +71,7 @@ float estimator(ring_buffer *Plant, ring_buffer *Estimator, float plantVector[SA
     float samplePlant;
     float sampleEstimator;
     int k = Plant->head+1;
-    for(int n = 1; n < SAMPLING_SIZE-1; n++) // SEPARAR DOIS CALCULOS ?
+    for (int n = 1; n < SAMPLING_SIZE-1; n++) // SEPARAR DOIS CALCULOS ?
     {
         if (k > SAMPLING_SIZE - 1)
         {
