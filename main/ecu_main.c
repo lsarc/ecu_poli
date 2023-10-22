@@ -28,7 +28,7 @@ const static char *TAG = "DEBUG";
 #define EXAMPLE_PCNT_LOW_LIMIT  -20
 
 #define EXAMPLE_CONT_GPIO_EDGE 25
-#define EXAMPLE_CONT_GPIO_LEVEL 25
+#define EXAMPLE_CONT_GPIO_LEVEL 34
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -108,10 +108,18 @@ void app_main(void)
     };
     pcnt_channel_handle_t pcnt_chan_a = NULL;
     ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_a_config, &pcnt_chan_a));
-  
+    pcnt_chan_config_t chan_b_config = {
+        .edge_gpio_num = EXAMPLE_CONT_GPIO_LEVEL,
+        .level_gpio_num = EXAMPLE_CONT_GPIO_EDGE,
+    };
+    pcnt_channel_handle_t pcnt_chan_b = NULL;
+    ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_b_config, &pcnt_chan_b));
+
     ESP_LOGI(TAG, "set edge and level actions for pcnt channels");
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
+    ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE));
+    ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
 
     ESP_LOGI(TAG, "enable pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
@@ -199,7 +207,7 @@ void app_main(void)
         if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
             pcnt_unit_clear_count(pcnt_unit);
-            ESP_LOGI(TAG, "%d Hz", pulse_count*10/2); // pulsos no tempo/tempo de amostragem * 60 / 4 
+            ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
             
         } 
       
