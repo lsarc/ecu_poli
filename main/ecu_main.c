@@ -20,11 +20,11 @@
 #include "driver/gptimer.h"
 
 
-const static char *TAG = "EXAMPLE";
+const static char *TAG = "DEBUG";
 
-#define tempo_ms 100
+#define tempo_espera_ms 100
 
-#define EXAMPLE_PCNT_HIGH_LIMIT 1000
+#define EXAMPLE_PCNT_HIGH_LIMIT 5000
 #define EXAMPLE_PCNT_LOW_LIMIT  -20
 
 #define EXAMPLE_CONT_GPIO_EDGE 25
@@ -113,6 +113,13 @@ void app_main(void)
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
 
+    ESP_LOGI(TAG, "enable pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
+    ESP_LOGI(TAG, "clear pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
+    ESP_LOGI(TAG, "start pcnt unit");
+    ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
+
     // TIMER
 
     gptimer_handle_t gptimer = NULL;
@@ -125,7 +132,7 @@ void app_main(void)
 
     gptimer_alarm_config_t alarm_config = {
         .reload_count = 0, // counter will reload with 0 on alarm event
-        .alarm_count = 10000, // period = 1s @resolution 10KHz
+        .alarm_count = 1000, // period = 0.1s @resolution 10KHz
         .flags.auto_reload_on_alarm = true, // enable auto-reload
     };
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
@@ -137,14 +144,6 @@ void app_main(void)
     ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, queue));
     ESP_ERROR_CHECK(gptimer_enable(gptimer));
     ESP_ERROR_CHECK(gptimer_start(gptimer));
-    
-    ESP_LOGI(TAG, "enable pcnt unit");
-    ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
-    ESP_LOGI(TAG, "clear pcnt unit");
-    ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
-    ESP_LOGI(TAG, "start pcnt unit");
-    ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
-
 
     //LED
 
@@ -193,18 +192,18 @@ void app_main(void)
     while (1) {
 
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
+        //ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
         dim = (adc_raw[0][0]-1430)/100;
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*307));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_ms))) {
+        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
             pcnt_unit_clear_count(pcnt_unit);
-            ESP_LOGI(TAG, "%d RPM", pulse_count*15); // pulsos no tempo/tempo de amostragem * 60 / 4 
+            ESP_LOGI(TAG, "%d Hz", pulse_count*10/2); // pulsos no tempo/tempo de amostragem * 60 / 4 
             
         } 
       
-        vTaskDelay(pdMS_TO_TICKS(tempo_ms));
+        vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
     }
 
     //Tear Down
