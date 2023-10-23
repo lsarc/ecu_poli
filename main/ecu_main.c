@@ -25,7 +25,7 @@ const static char *TAG = "DEBUG";
 #define tempo_espera_ms 100
 
 #define EXAMPLE_PCNT_HIGH_LIMIT 5000
-#define EXAMPLE_PCNT_LOW_LIMIT  -20
+#define EXAMPLE_PCNT_LOW_LIMIT  -5000
 
 #define EXAMPLE_CONT_GPIO_EDGE 25
 #define EXAMPLE_CONT_GPIO_LEVEL 34
@@ -41,34 +41,13 @@ const static char *TAG = "DEBUG";
         ADC General Macros
 ---------------------------------------------------------------*/
 //ADC1 Channels
-#if CONFIG_IDF_TARGET_ESP32
+
 #define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_4
 #define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_5
-#else
-#define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_2
-#define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_3
-#endif
-
-#if (SOC_ADC_PERIPH_NUM >= 2) && !CONFIG_IDF_TARGET_ESP32C3
-/**
- * On ESP32C3, ADC2 is no longer supported, due to its HW limitation.
- * Search for errata on espressif website for more details.
- */
-#define EXAMPLE_USE_ADC2            1
-#endif
-
-#if EXAMPLE_USE_ADC2
-//ADC2 Channels
-#if CONFIG_IDF_TARGET_ESP32
-#define EXAMPLE_ADC2_CHAN0          ADC_CHANNEL_0
-#else
-#define EXAMPLE_ADC2_CHAN0          ADC_CHANNEL_0
-#endif
-#endif  //#if EXAMPLE_USE_ADC2
 
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_11
 
-static int adc_raw[2][10];
+static int adc_raw;
 
 static bool example_timer_on_alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
@@ -199,9 +178,9 @@ void app_main(void)
     int pulse_count = 0;
     while (1) {
 
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
         //ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
-        dim = (adc_raw[0][0]-1430)/100;
+        dim = (adc_raw-1430)/100;
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*307));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
