@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "soc/soc_caps.h"
 #include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
@@ -19,8 +20,10 @@
 #include "driver/pulse_cnt.h"
 #include "driver/gptimer.h"
 
+static SemaphoreHandle_t sync_task;
+#define STATS_TASK_PRIO     3
 
-const static char *TAG = "DEBUG";
+const static char *TAG = "ecu_main";
 
 #define tempo_espera_ms 100
 
@@ -35,7 +38,7 @@ const static char *TAG = "DEBUG";
 #define LEDC_OUTPUT_IO          (2) // Define the output GPIO
 #define LEDC_CHANNEL            LEDC_CHANNEL_0
 #define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
-#define LEDC_DUTY               (4095) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
+#define LEDC_DUTY               (1000) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
 #define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
 /*---------------------------------------------------------------
         ADC General Macros
@@ -43,11 +46,22 @@ const static char *TAG = "DEBUG";
 //ADC1 Channels
 
 #define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_4
-#define EXAMPLE_ADC1_CHAN1          ADC_CHANNEL_5
 
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_11
 
 static int adc_raw;
+
+static void led_dim(void *arg)
+{
+    xSemaphoreTake(sync_task, portMAX_DELAY);
+    adc_oneshot_unit_handle_t adc1_handle = arg;
+    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
+    //ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
+    int dim = (adc_raw-1430)/100;
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*307));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+    xSemaphoreGive(sync_task);
+}
 
 static bool example_timer_on_alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
@@ -149,7 +163,7 @@ void app_main(void)
         .timer_sel      = LEDC_TIMER,
         .intr_type      = LEDC_INTR_DISABLE,
         .gpio_num       = LEDC_OUTPUT_IO,
-        .duty           = 4095, // Set duty to 50%
+        .duty           = LEDC_DUTY, // Set duty to 50%
         .hpoint         = 0
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
@@ -170,31 +184,30 @@ void app_main(void)
         .atten = EXAMPLE_ADC_ATTEN,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN1, &config));
 
-    //LOOP PRINCIPAL
-
-    int dim = 0;
+    
+   
     int pulse_count = 0;
-    while (1) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+    sync_task = xSemaphoreCreateMutex();
+    //LOOP PRINCIPAL
+    while(1)
+    {
+        xTaskCreatePinnedToCore(led_dim, "led", 4096, adc1_handle, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+        //xTaskCreatePinnedToCore(speed, "speed", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+        xSemaphoreGive(sync_task);
+        /* while (1) {
 
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
-        //ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
-        dim = (adc_raw-1430)/100;
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*307));
-        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
-            ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
-            pcnt_unit_clear_count(pcnt_unit);
-            ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
-            
-        } 
-      
-        vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
+            if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
+                ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+                pcnt_unit_clear_count(pcnt_unit);
+                ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
+                
+            } 
+
+            vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
+        } */
     }
-
-    //Tear Down
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
-
+    
 }
 
