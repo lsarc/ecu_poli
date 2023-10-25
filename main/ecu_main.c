@@ -20,8 +20,8 @@
 #include "driver/pulse_cnt.h"
 #include "driver/gptimer.h"
 
-static SemaphoreHandle_t sync_task;
-#define STATS_TASK_PRIO     3
+#define SYNC_TASK_PRIO 1
+#define LED_TASK_PRIO 2
 
 const static char *TAG = "ecu_main";
 
@@ -51,16 +51,39 @@ const static char *TAG = "ecu_main";
 
 static int adc_raw;
 
-static void led_dim(void *arg)
+
+
+static void led_dim_task(void *arg)
 {
-    xSemaphoreTake(sync_task, portMAX_DELAY);
-    adc_oneshot_unit_handle_t adc1_handle = arg;
-    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
-    //ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
-    int dim = (adc_raw-1430)/100;
-    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*307));
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-    xSemaphoreGive(sync_task);
+    while(1)
+    {
+        adc_oneshot_unit_handle_t adc1_handle = arg;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
+        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw);
+        int dim = (adc_raw-700)>>5;
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*77));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+        vTaskDelay(portTICK_PERIOD_MS);
+    }
+    
+}
+
+static void start_count_task(void *arg)
+{
+    while(1)
+    {
+
+    }
+}
+
+static void sync_task(void *arg[])
+{
+    void* adc1_handler = arg[0];
+    xTaskCreatePinnedToCore(led_dim_task, "led_dim", 4096, adc1_handler, LED_TASK_PRIO, NULL, tskNO_AFFINITY);
+    while(1)
+    {
+        vTaskDelay(portTICK_PERIOD_MS);
+    }
 }
 
 static bool example_timer_on_alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
@@ -185,29 +208,32 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
 
-    
-   
+    void* args[3] ;
+    args[0] = adc1_handle;
+    args[1] = adc1_handle;
+    args[2] = adc1_handle;
+
     int pulse_count = 0;
     vTaskDelay(pdMS_TO_TICKS(100));
-    sync_task = xSemaphoreCreateMutex();
+    xTaskCreatePinnedToCore(sync_task, "sync", 4096, args, LED_TASK_PRIO, NULL, tskNO_AFFINITY);
+    
     //LOOP PRINCIPAL
-    while(1)
-    {
-        xTaskCreatePinnedToCore(led_dim, "led", 4096, adc1_handle, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
-        //xTaskCreatePinnedToCore(speed, "speed", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
-        xSemaphoreGive(sync_task);
-        /* while (1) {
+    
+    
+    //xTaskCreatePinnedToCore(speed, "speed", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
+    
+    /* while (1) {
 
-            if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
-                ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
-                pcnt_unit_clear_count(pcnt_unit);
-                ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
-                
-            } 
+        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
+            ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+            pcnt_unit_clear_count(pcnt_unit);
+            ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
+            
+        } 
 
-            vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
-        } */
-    }
+        vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
+    } */
+    
     
 }
 
