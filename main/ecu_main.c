@@ -22,10 +22,9 @@
 
 #define SYNC_TASK_PRIO 1
 #define LED_TASK_PRIO 2
+#define COUNT_TASK_PRIO 3
 
 const static char *TAG = "ecu_main";
-
-#define tempo_espera_ms 100
 
 #define EXAMPLE_PCNT_HIGH_LIMIT 5000
 #define EXAMPLE_PCNT_LOW_LIMIT  -5000
@@ -51,51 +50,59 @@ const static char *TAG = "ecu_main";
 
 static int adc_raw;
 
+#define TIMER_RES 10000
+#define ALARM_COUNT 2000
+const int MEAS_FREQ = TIMER_RES/ALARM_COUNT;
 
 
 static void led_dim_task(void *arg)
 {
+    adc_oneshot_unit_handle_t adc1_handle = arg;
     while(1)
     {
-        adc_oneshot_unit_handle_t adc1_handle = arg;
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw);
-        int dim = (adc_raw-700)>>5;
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*77));
+        int dim = (adc_raw-700)>>4;
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*38));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
     
 }
 
-static void start_count_task(void *arg)
+static void speed_meas_task(void *arg[])
 {
-    while(1)
+    pcnt_unit_handle_t pcnt_unit = arg[1];
+    QueueHandle_t queue = arg[2];
+    int event_count, pulse_count;    
+    while (1) 
     {
-
+        if (xQueueReceive(queue, &event_count, portTICK_PERIOD_MS)) {
+            ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
+            pcnt_unit_clear_count(pcnt_unit);
+            ESP_LOGI(TAG, "%d Hz", pulse_count*MEAS_FREQ/4); 
+            vTaskDelay(portTICK_PERIOD_MS);
+        } 
     }
 }
 
-static void sync_task(void *arg[])
+static void sync_task(void *args[])
 {
-    void* adc1_handler = arg[0];
+    void* adc1_handler = args[0];
     xTaskCreatePinnedToCore(led_dim_task, "led_dim", 4096, adc1_handler, LED_TASK_PRIO, NULL, tskNO_AFFINITY);
+    xTaskCreatePinnedToCore(speed_meas_task, "speed", 4096, args, COUNT_TASK_PRIO, NULL, tskNO_AFFINITY);
+    
     while(1)
     {
         vTaskDelay(portTICK_PERIOD_MS);
     }
 }
 
-static bool example_timer_on_alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
+static bool alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
     BaseType_t high_task_awoken = pdFALSE;
     QueueHandle_t queue = (QueueHandle_t)user_ctx;
-    // Retrieve the count value from event data
-    // Optional: send the event data to other task by OS queue
-    // Do not introduce complex logics in callbacks
-    // Suggest dealing with event data in the main loop, instead of in this callback
     xQueueSendFromISR(queue, &(edata->count_value), &high_task_awoken);
-    // return whether we need to yield at the end of ISR
     return high_task_awoken == pdTRUE;
 }
 
@@ -150,19 +157,19 @@ void app_main(void)
     gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
         .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 10000, // 10KHz, 1 tick = 0.1ms
+        .resolution_hz = TIMER_RES, // 10KHz, 1 tick = 0.1ms
     };
     ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
 
     gptimer_alarm_config_t alarm_config = {
         .reload_count = 0, // counter will reload with 0 on alarm event
-        .alarm_count = 1000, // period = 0.1s @resolution 10KHz
+        .alarm_count = ALARM_COUNT, // period = 0.2s @resolution 10KHz
         .flags.auto_reload_on_alarm = true, // enable auto-reload
     };
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
 
     gptimer_event_callbacks_t cbs = {
-        .on_alarm = example_timer_on_alarm_cb, // register user callback
+        .on_alarm = alarm_cb, // register user callback
     };
     QueueHandle_t queue = xQueueCreate(10, sizeof(int));
     ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, queue));
@@ -210,10 +217,9 @@ void app_main(void)
 
     void* args[3] ;
     args[0] = adc1_handle;
-    args[1] = adc1_handle;
-    args[2] = adc1_handle;
+    args[1] = pcnt_unit;
+    args[2] = queue;
 
-    int pulse_count = 0;
     vTaskDelay(pdMS_TO_TICKS(100));
     xTaskCreatePinnedToCore(sync_task, "sync", 4096, args, LED_TASK_PRIO, NULL, tskNO_AFFINITY);
     
@@ -227,7 +233,7 @@ void app_main(void)
         if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
             pcnt_unit_clear_count(pcnt_unit);
-            ESP_LOGI(TAG, "%d Hz", pulse_count*10/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
+            ESP_LOGI(TAG, "%d Hz", pulse_count*5/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
             
         } 
 
