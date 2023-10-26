@@ -1,8 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,11 +21,11 @@
 
 const static char *TAG = "ecu_main";
 
-#define EXAMPLE_PCNT_HIGH_LIMIT 5000
-#define EXAMPLE_PCNT_LOW_LIMIT  -5000
+#define CONT_HIGH_LIMIT 5000
+#define CONT_LOW_LIMIT  -5000
 
-#define EXAMPLE_CONT_GPIO_EDGE 25
-#define EXAMPLE_CONT_GPIO_LEVEL 34
+#define CONT_GPIO_EDGE 25
+#define CONT_GPIO_LEVEL 34
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -44,9 +39,9 @@ const static char *TAG = "ecu_main";
 ---------------------------------------------------------------*/
 //ADC1 Channels
 
-#define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_4
+#define ADC1_CHAN0          ADC_CHANNEL_4
 
-#define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_11
+#define ADC_ATTEN           ADC_ATTEN_DB_11
 
 static int adc_raw;
 
@@ -54,14 +49,15 @@ static int adc_raw;
 #define ALARM_COUNT 2000
 const int MEAS_FREQ = TIMER_RES/ALARM_COUNT;
 
+// TASK DIMMER DO LED / SAÍDA DO PWM
 
 static void led_dim_task(void *arg)
 {
     adc_oneshot_unit_handle_t adc1_handle = arg;
     while(1)
     {
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw);
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
+        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
         int dim = (adc_raw-700)>>4;
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*38));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
@@ -69,6 +65,8 @@ static void led_dim_task(void *arg)
     }
     
 }
+
+// TASK DE MEDIÇÃO DE ROTAÇÃO
 
 static void speed_meas_task(void *arg[])
 {
@@ -86,6 +84,8 @@ static void speed_meas_task(void *arg[])
     }
 }
 
+// TASK DE SINCRONIZAÇÃO
+
 static void sync_task(void *args[])
 {
     void* adc1_handler = args[0];
@@ -98,6 +98,8 @@ static void sync_task(void *args[])
     }
 }
 
+// INTERRUPÇÃO DO ALARME DO TIMER
+
 static bool alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
     BaseType_t high_task_awoken = pdFALSE;
@@ -106,14 +108,16 @@ static bool alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *e
     return high_task_awoken == pdTRUE;
 }
 
+// PROGRAMA INICIA AQUI
+
 void app_main(void)
 {
     // CONTADOR PULSOS
 
     ESP_LOGI(TAG, "install pcnt unit");
     pcnt_unit_config_t unit_config = {
-        .high_limit = EXAMPLE_PCNT_HIGH_LIMIT,
-        .low_limit = EXAMPLE_PCNT_LOW_LIMIT,
+        .high_limit = CONT_HIGH_LIMIT,
+        .low_limit = CONT_LOW_LIMIT,
     };
     pcnt_unit_handle_t pcnt_unit = NULL;
     ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit));
@@ -126,17 +130,19 @@ void app_main(void)
 
     ESP_LOGI(TAG, "install pcnt channels");
     pcnt_chan_config_t chan_a_config = {
-        .edge_gpio_num = EXAMPLE_CONT_GPIO_EDGE,
-        .level_gpio_num = EXAMPLE_CONT_GPIO_LEVEL,
+        .edge_gpio_num = CONT_GPIO_EDGE,
+        .level_gpio_num = CONT_GPIO_LEVEL,
     };
     pcnt_channel_handle_t pcnt_chan_a = NULL;
     ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_a_config, &pcnt_chan_a));
     pcnt_chan_config_t chan_b_config = {
-        .edge_gpio_num = EXAMPLE_CONT_GPIO_LEVEL,
-        .level_gpio_num = EXAMPLE_CONT_GPIO_EDGE,
+        .edge_gpio_num = CONT_GPIO_LEVEL,
+        .level_gpio_num = CONT_GPIO_EDGE,
     };
     pcnt_channel_handle_t pcnt_chan_b = NULL;
     ESP_ERROR_CHECK(pcnt_new_channel(pcnt_unit, &chan_b_config, &pcnt_chan_b));
+
+    // SETUP DO ROTARY ENCODER PARA DETECÇÃO DE SENTIDO
 
     ESP_LOGI(TAG, "set edge and level actions for pcnt channels");
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
@@ -161,6 +167,8 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
 
+    // ALARME PARA INTERRUPÇÃO DA MEDIÇÃO DE ROTAÇÃO
+
     gptimer_alarm_config_t alarm_config = {
         .reload_count = 0, // counter will reload with 0 on alarm event
         .alarm_count = ALARM_COUNT, // period = 0.2s @resolution 10KHz
@@ -176,7 +184,7 @@ void app_main(void)
     ESP_ERROR_CHECK(gptimer_enable(gptimer));
     ESP_ERROR_CHECK(gptimer_start(gptimer));
 
-    //LED
+    // LEDC / USADO PARA O PWM
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
@@ -199,47 +207,33 @@ void app_main(void)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
 
-    //LEITURA ADC
+    // LEITURA ADC
 
-    //-------------ADC1 Init---------------//
+    // ADC1 Init
     adc_oneshot_unit_handle_t adc1_handle;
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
     };
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
 
-    //-------------ADC1 Config---------------//
+    // ADC1 Config 
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = EXAMPLE_ADC_ATTEN,
+        .atten = ADC_ATTEN,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHAN0, &config));
+
+    // VETOR DE ARGUMENTOS
 
     void* args[3] ;
     args[0] = adc1_handle;
     args[1] = pcnt_unit;
     args[2] = queue;
 
+    // INICIA TASK DE SINCRONIZAÇÃO
+
     vTaskDelay(pdMS_TO_TICKS(100));
     xTaskCreatePinnedToCore(sync_task, "sync", 4096, args, LED_TASK_PRIO, NULL, tskNO_AFFINITY);
-    
-    //LOOP PRINCIPAL
-    
-    
-    //xTaskCreatePinnedToCore(speed, "speed", 4096, NULL, STATS_TASK_PRIO, NULL, tskNO_AFFINITY);
-    
-    /* while (1) {
 
-        if (xQueueReceive(queue, &dim, pdMS_TO_TICKS(tempo_espera_ms))) {
-            ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
-            pcnt_unit_clear_count(pcnt_unit);
-            ESP_LOGI(TAG, "%d Hz", pulse_count*5/4); // pulsos no tempo/tempo de amostragem * 60 / 4 
-            
-        } 
-
-        vTaskDelay(pdMS_TO_TICKS(tempo_espera_ms));
-    } */
-    
-    
 }
 
