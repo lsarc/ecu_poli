@@ -17,7 +17,7 @@
 
 #define SYNC_TASK_PRIO 1
 #define LED_TASK_PRIO 2
-#define COUNT_TASK_PRIO 3
+#define COUNT_TASK_PRIO 2
 
 const static char *TAG = "ecu_main";
 
@@ -58,8 +58,8 @@ static void led_dim_task(void *arg)
     {
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
         ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
-        int dim = (adc_raw-700)>>4;
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*38));
+        int dim = (adc_raw)>>4;
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, dim*32));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
@@ -82,6 +82,11 @@ static void speed_meas_task(void *arg[])
             vTaskDelay(portTICK_PERIOD_MS);
         } 
     }
+}
+
+static void control(void *args[])
+{
+
 }
 
 // TASK DE SINCRONIZAÇÃO
