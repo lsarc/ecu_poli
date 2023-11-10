@@ -14,16 +14,14 @@
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
 #include "driver/gptimer.h"
-#include "ring_buffer.h"
 #include "estimador.h"
 
 
 #define SYNC_TASK_PRIO 1
-#define PWM_TASK_PRIO 2
-#define SAMPLE_TASK_PRIO 5
-#define CONTROL_TASK_PRIO 3
+#define SAMPLE_TASK_PRIO 3
+#define CONTROL_TASK_PRIO 2
 
-const static char *TAG_MAIN = "ecu_main";
+const static char *TAG = "ecu_main";
 
 #define CONT_HIGH_LIMIT 5000
 #define CONT_LOW_LIMIT  -5000
@@ -47,10 +45,8 @@ const static char *TAG_MAIN = "ecu_main";
 
 #define ADC_ATTEN           ADC_ATTEN_DB_11
 
-static int adc_raw;
-
 #define TIMER_RES 10000
-#define ALARM_COUNT 5000
+#define ALARM_COUNT 2000
 const int MEAS_FREQ = TIMER_RES/ALARM_COUNT;
 
 static float estimatorArray[SAMPLING_SIZE];
@@ -61,21 +57,7 @@ static ring_buffer estimatorBuffer;
 
 // SAÍDA DO PWM
 
-static void pwm_task(void *arg)
-{
-    adc_oneshot_unit_handle_t adc1_handle = arg;
-    int pwm;
-    while(1)
-    {
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw));
-        ESP_LOGI(TAG_MAIN, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw);
-        pwm = (adc_raw)>>4;
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, pwm*32));
-        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-        vTaskDelay(portTICK_PERIOD_MS);
-    }
-    
-}
+
 
 // TASK DE MEDIÇÃO DE ROTAÇÃO
 
@@ -92,7 +74,7 @@ static void sample_task(void *args[])
             pcnt_unit_clear_count(pcnt_unit);
             vel = pulse_count*MEAS_FREQ/4;
             updateSamples(&plantBuffer, &estimatorBuffer, vel, estimator(&plantBuffer, &estimatorBuffer, &plantArray, &estimatorArray, 1.0));
-            ESP_LOGI(TAG_MAIN, "%f Hz", vel); 
+            ESP_LOGI(TAG, "%f Hz", vel); 
             vTaskDelay(portTICK_PERIOD_MS);
         } 
     }
@@ -102,11 +84,11 @@ static void sample_task(void *args[])
 
 static void control_task(void *args[])
 {
-
- 
-
+    int pwm = 4095;
     while(1)
     {
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, pwm));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
 }
@@ -116,10 +98,9 @@ static void control_task(void *args[])
 static void sync_task(void *args[])
 {
     void *adc1_handler = args[0];
-    xTaskCreatePinnedToCore(pwm_task, "pwm", 4096, adc1_handler, PWM_TASK_PRIO, NULL, 0);
     xTaskCreatePinnedToCore(sample_task, "sample", 4096, args, SAMPLE_TASK_PRIO, NULL, 1);
     xTaskCreatePinnedToCore(control_task, "control", 4096, args, CONTROL_TASK_PRIO, NULL, 0);
-    ESP_LOGI(TAG_MAIN, "ALL TASKS STARTED");
+    ESP_LOGI(TAG, "ALL TASKS STARTED");
     while(1)
     {
         vTaskDelay(portTICK_PERIOD_MS);
@@ -142,7 +123,7 @@ void app_main(void)
 {
     // CONTADOR PULSOS
 
-    ESP_LOGI(TAG_MAIN, "install pcnt unit");
+    ESP_LOGI(TAG, "install pcnt unit");
     pcnt_unit_config_t unit_config = {
         .high_limit = CONT_HIGH_LIMIT,
         .low_limit = CONT_LOW_LIMIT,
@@ -150,13 +131,13 @@ void app_main(void)
     pcnt_unit_handle_t pcnt_unit = NULL;
     ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &pcnt_unit));
 
-    ESP_LOGI(TAG_MAIN, "set glitch filter");
+    ESP_LOGI(TAG, "set glitch filter");
     pcnt_glitch_filter_config_t filter_config = {
         .max_glitch_ns = 1000,
     };
     ESP_ERROR_CHECK(pcnt_unit_set_glitch_filter(pcnt_unit, &filter_config));
 
-    ESP_LOGI(TAG_MAIN, "install pcnt channels");
+    ESP_LOGI(TAG, "install pcnt channels");
     pcnt_chan_config_t chan_a_config = {
         .edge_gpio_num = CONT_GPIO_EDGE,
         .level_gpio_num = CONT_GPIO_LEVEL,
@@ -172,17 +153,17 @@ void app_main(void)
 
     // SETUP DO ROTARY ENCODER PARA DETECÇÃO DE SENTIDO
 
-    ESP_LOGI(TAG_MAIN, "set edge and level actions for pcnt channels");
+    ESP_LOGI(TAG, "set edge and level actions for pcnt channels");
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE));
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
     ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE));
     ESP_ERROR_CHECK(pcnt_channel_set_level_action(pcnt_chan_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE));
 
-    ESP_LOGI(TAG_MAIN, "enable pcnt unit");
+    ESP_LOGI(TAG, "enable pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_enable(pcnt_unit));
-    ESP_LOGI(TAG_MAIN, "clear pcnt unit");
+    ESP_LOGI(TAG, "clear pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_unit));
-    ESP_LOGI(TAG_MAIN, "start pcnt unit");
+    ESP_LOGI(TAG, "start pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
 
     // TIMER
@@ -270,7 +251,7 @@ void app_main(void)
     // INICIA TASK DE SINCRONIZAÇÃO
 
     vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG_MAIN, "STARTING TASKS");
+    ESP_LOGI(TAG, "STARTING TASKS");
     xTaskCreatePinnedToCore(sync_task, "sync", 4096, args, SYNC_TASK_PRIO, NULL, 0);
 
 }
