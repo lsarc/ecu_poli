@@ -50,8 +50,8 @@ float estimator(ring_buffer *Plant, ring_buffer *Estimator, float *plantArray, f
 
 void updateSamples(ring_buffer *Plant, ring_buffer *Estimator, float newPlant, float newEstimator)
 {
-    read(Plant);
-    read(Estimator);
-    write(newPlant, Plant);
-    write(newEstimator, Estimator);
+    readBuffer(Plant);
+    readBuffer(Estimator);
+    writeBuffer(newPlant, Plant);
+    writeBuffer(newEstimator, Estimator);
 }

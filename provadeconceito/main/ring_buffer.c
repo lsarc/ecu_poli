@@ -3,13 +3,13 @@
 
 const static char *TAG = "ring_buffer";
 
-float read(ring_buffer *s)
+float readBuffer(ring_buffer *s)
 {
     float data;
     if (s->head == s->tail)
     {
         data = 0.0;
-        ESP_LOGI(TAG, "Buffer Underflow, tail = %d, head = %d", s->tail, s->head);
+        ESP_LOGI(TAG, "Buffer Underflow");
     }
     else
     {
@@ -18,15 +18,39 @@ float read(ring_buffer *s)
     }
     return data;
 }
-void write(float data, ring_buffer *s)
+void writeBuffer(float data, ring_buffer *s)
 {
     if (( s->tail+1 ) % BUFFER_SIZE == s->head)
     {
-        ESP_LOGI(TAG, "Buffer Overflow, tail = %d, head = %d", s->tail, s->head);
+    	ESP_LOGI(TAG, "Buffer Overflow");
     }
     else
     {
         s->contents[s->tail] = data; // write data
         s->tail = (s->tail+1) % BUFFER_SIZE; // update tail
     }
+}
+
+void initializeBuffer(ring_buffer *s)
+{
+	s->tail = 0;
+	s->head = 0;
+
+	for (int i = 0; i < SAMPLING_SIZE; i++)
+	{
+		writeBuffer(0.0, s);
+	}
+}
+
+float newerValue(ring_buffer *s)
+{
+	int tail = s->tail;
+	int i;
+	if (tail == 0){
+		i = SAMPLING_SIZE;
+	}
+	else{
+		i = tail - 1;
+	}
+	return s->contents[i];
 }

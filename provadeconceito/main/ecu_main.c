@@ -15,10 +15,11 @@
 #include "driver/pulse_cnt.h"
 #include "driver/gptimer.h"
 #include "estimador.h"
+#include "ring_buffer.h"
 
 
 #define SYNC_TASK_PRIO 1
-#define SAMPLE_TASK_PRIO 3
+#define SAMPLE_TASK_PRIO 2
 #define CONTROL_TASK_PRIO 2
 
 const static char *TAG = "ecu_main";
@@ -36,14 +37,6 @@ const static char *TAG = "ecu_main";
 #define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
 #define LEDC_DUTY               (1000) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
 #define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
-/*---------------------------------------------------------------
-        ADC General Macros
----------------------------------------------------------------*/
-//ADC1 Channels
-
-#define ADC1_CHAN0          ADC_CHANNEL_4
-
-#define ADC_ATTEN           ADC_ATTEN_DB_11
 
 #define TIMER_RES 10000
 #define ALARM_COUNT 2000
@@ -55,26 +48,23 @@ static float plantArray[SAMPLING_SIZE];
 static ring_buffer plantBuffer;
 static ring_buffer estimatorBuffer;
 
-// SAÍDA DO PWM
-
-
 
 // TASK DE MEDIÇÃO DE ROTAÇÃO
 
-static void sample_task(void *args[])
+static void sample_task(void *arg)
 {
-    pcnt_unit_handle_t pcnt_unit = args[1];
-    QueueHandle_t queue = args[2];
-    int event_count, pulse_count;
-    float vel;    
+    pcnt_unit_handle_t pcnt_unit = arg;
+    int pulse_count;
+    float vel;
+    float ALPHA = 1.0;
     while (1) 
     {
-        if (xQueueReceive(queue, &event_count, portTICK_PERIOD_MS)) {
+        if (ulTaskNotifyTake(pdTRUE, portTICK_PERIOD_MS)) {
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
             pcnt_unit_clear_count(pcnt_unit);
             vel = pulse_count*MEAS_FREQ/4;
-            updateSamples(&plantBuffer, &estimatorBuffer, vel, estimator(&plantBuffer, &estimatorBuffer, &plantArray, &estimatorArray, 1.0));
-            ESP_LOGI(TAG, "%f Hz", vel); 
+            updateSamples(&plantBuffer, &estimatorBuffer, vel, estimator(&plantBuffer, &estimatorBuffer, plantArray, estimatorArray, ALPHA));
+            ESP_LOGI(TAG, "%f Hz", vel);
             vTaskDelay(portTICK_PERIOD_MS);
         } 
     }
@@ -82,12 +72,16 @@ static void sample_task(void *args[])
 
 // TASK DE CONTROLE
 
-static void control_task(void *args[])
+static void control_task(void *arg)
 {
-    int pwm = 4095;
+    float Kp = 1;
+    float setpoint = 0.0;
+    float pwm = 0.0;
     while(1)
     {
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, pwm));
+    	pwm = setpoint - newerValue(&plantBuffer);
+    	pwm = pwm*Kp + newerValue(&estimatorBuffer);
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, (int)pwm));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
@@ -95,11 +89,11 @@ static void control_task(void *args[])
 
 // TASK DE SINCRONIZAÇÃO
 
-static void sync_task(void *args[])
+TaskHandle_t SAMPLE_TASK;
+static void sync_task(void *arg)
 {
-    void *adc1_handler = args[0];
-    xTaskCreatePinnedToCore(sample_task, "sample", 4096, args, SAMPLE_TASK_PRIO, NULL, 1);
-    xTaskCreatePinnedToCore(control_task, "control", 4096, args, CONTROL_TASK_PRIO, NULL, 0);
+    xTaskCreatePinnedToCore(sample_task, "sample", 4096, arg, SAMPLE_TASK_PRIO, &SAMPLE_TASK, 0);
+    xTaskCreatePinnedToCore(control_task, "control", 4096, arg, CONTROL_TASK_PRIO, NULL, 1);
     ESP_LOGI(TAG, "ALL TASKS STARTED");
     while(1)
     {
@@ -112,8 +106,7 @@ static void sync_task(void *args[])
 static bool alarm_cb(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx)
 {
     BaseType_t high_task_awoken = pdFALSE;
-    QueueHandle_t queue = (QueueHandle_t)user_ctx;
-    xQueueSendFromISR(queue, &(edata->count_value), &high_task_awoken);
+    xTaskNotifyFromISR(SAMPLE_TASK, 0, eIncrement, &high_task_awoken);
     return high_task_awoken == pdTRUE;
 }
 
@@ -166,33 +159,6 @@ void app_main(void)
     ESP_LOGI(TAG, "start pcnt unit");
     ESP_ERROR_CHECK(pcnt_unit_start(pcnt_unit));
 
-    // TIMER
-
-    gptimer_handle_t gptimer = NULL;
-    gptimer_config_t timer_config = {
-        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
-        .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = TIMER_RES, // 10KHz, 1 tick = 0.1ms
-    };
-    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
-
-    // ALARME PARA INTERRUPÇÃO DA MEDIÇÃO DE ROTAÇÃO
-
-    gptimer_alarm_config_t alarm_config = {
-        .reload_count = 0, // counter will reload with 0 on alarm event
-        .alarm_count = ALARM_COUNT, // period = 0.2s @resolution 10KHz
-        .flags.auto_reload_on_alarm = true, // enable auto-reload
-    };
-    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
-
-    gptimer_event_callbacks_t cbs = {
-        .on_alarm = alarm_cb, // register user callback
-    };
-    QueueHandle_t queue = xQueueCreate(10, sizeof(int));
-    ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, queue));
-    ESP_ERROR_CHECK(gptimer_enable(gptimer));
-    ESP_ERROR_CHECK(gptimer_start(gptimer));
-
     // LEDC / USADO PARA O PWM
 
     ledc_timer_config_t ledc_timer = {
@@ -202,6 +168,7 @@ void app_main(void)
         .freq_hz          = LEDC_FREQUENCY,  // Set output frequency at 5 kHz
         .clk_cfg          = LEDC_AUTO_CLK
     };
+    ESP_LOGI(TAG, "start ledc_timer");
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
     ledc_channel_config_t ledc_channel = {
@@ -213,46 +180,61 @@ void app_main(void)
         .duty           = LEDC_DUTY, // Set duty to 50%
         .hpoint         = 0
     };
+    ESP_LOGI(TAG, "start ledc_channel");
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
+    // TIMER
 
-    // LEITURA ADC
+	gptimer_handle_t gptimer = NULL;
+	gptimer_config_t timer_config = {
+		.clk_src = GPTIMER_CLK_SRC_DEFAULT,
+		.direction = GPTIMER_COUNT_UP,
+		.resolution_hz = TIMER_RES, // 10KHz, 1 tick = 0.1ms
+	};
+	ESP_LOGI(TAG, "new gptimer");
+	ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
 
-    // ADC1 Init
-    adc_oneshot_unit_handle_t adc1_handle;
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+	// ALARME PARA INTERRUPÇÃO DA MEDIÇÃO DE ROTAÇÃO
 
-    // ADC1 Config 
-    adc_oneshot_chan_cfg_t config = {
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHAN0, &config));
+	gptimer_alarm_config_t alarm_config = {
+		.reload_count = 0, // counter will reload with 0 on alarm event
+		.alarm_count = ALARM_COUNT, // period = 0.2s @resolution 10KHz
+		.flags.auto_reload_on_alarm = true, // enable auto-reload
+	};
+	ESP_LOGI(TAG, "set alarm");
+	ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
+
+	gptimer_event_callbacks_t cbs = {
+		.on_alarm = alarm_cb, // register user callback
+	};
+	QueueHandle_t queue = xQueueCreate(10, sizeof(int));
+	ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, queue));
+	ESP_LOGI(TAG, "enable timer");
+	ESP_ERROR_CHECK(gptimer_enable(gptimer));
+	ESP_ERROR_CHECK(gptimer_start(gptimer));
+
 
     // INICIALIZA VETORES E BUFFERS
 
-    for(int i = 0; i < SAMPLING_SIZE; i++)
-    {
-        write(0.0, &estimatorBuffer);
-        write(0.0, &plantBuffer);
-    }
-    fillAbsoluteVectors(&plantArray, &estimatorArray);
+    ESP_LOGI(TAG, "initialize arrays");
+    fillAbsoluteVectors(plantArray, estimatorArray);
+
+    ESP_LOGI(TAG, "initialize buffers");
+
+	initializeBuffer(&estimatorBuffer);
+	initializeBuffer(&plantBuffer);
 
     // VETOR DE ARGUMENTOS
 
-    void* args[3];
-    args[0] = adc1_handle;
-    args[1] = pcnt_unit;
-    args[2] = queue;
+    void* args[2];
+    args[0] = pcnt_unit;
+    args[1] = queue;
 
     // INICIA TASK DE SINCRONIZAÇÃO
 
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "STARTING TASKS");
-    xTaskCreatePinnedToCore(sync_task, "sync", 4096, args, SYNC_TASK_PRIO, NULL, 0);
+    xTaskCreatePinnedToCore(sync_task, "sync", 4096, (void*)pcnt_unit, SYNC_TASK_PRIO, NULL, 0);
 
 }
 
