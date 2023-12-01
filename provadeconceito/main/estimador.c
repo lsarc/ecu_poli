@@ -1,8 +1,8 @@
 #include "ring_buffer.h"
 #include "estimador.h"
 
-const float T = 1.0; // period
-const float Ts = T/SAMPLING_SIZE; // sample period
+const float T = 10.0; // period
+const float Ts = T/(SAMPLING_SIZE-1); // sample period
 const float absPlant = 60.0/T/T/T/T/T;
 const float absOutput = -30.0/T/T/T/T/T;
 
@@ -48,10 +48,8 @@ float estimator(ring_buffer *Plant, ring_buffer *Estimator, float *plantArray, f
     return sumPlant + sumEstimator*a;
 }
 
-void updateSamples(ring_buffer *Plant, ring_buffer *Estimator, float newPlant, float newEstimator)
+void updateSamples(ring_buffer *Array, float newSample)
 {
-    readBuffer(Plant);
-    readBuffer(Estimator);
-    writeBuffer(newPlant, Plant);
-    writeBuffer(newEstimator, Estimator);
+    readBuffer(Array);
+    writeBuffer(newSample, Array);
 }

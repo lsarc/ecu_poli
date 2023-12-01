@@ -32,39 +32,41 @@ const static char *TAG = "ecu_main";
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
-#define LEDC_OUTPUT_IO          (2) // Define the output GPIO
+#define LEDC_OUTPUT_IO          (27) // Define the output GPIO
 #define LEDC_CHANNEL            LEDC_CHANNEL_0
 #define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
 #define LEDC_DUTY               (1000) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
 #define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
+#define ALPHA 					2.0
 
 #define TIMER_RES 10000
 #define ALARM_COUNT 2000
 const int MEAS_FREQ = TIMER_RES/ALARM_COUNT;
 
-static float estimatorArray[SAMPLING_SIZE];
+static float inputArray[SAMPLING_SIZE];
 static float plantArray[SAMPLING_SIZE];
 
 static ring_buffer plantBuffer;
-static ring_buffer estimatorBuffer;
+static ring_buffer inputBuffer;
 
 
 // TASK DE MEDIÇÃO DE ROTAÇÃO
 
+float est = 0.0;
 static void sample_task(void *arg)
 {
     pcnt_unit_handle_t pcnt_unit = arg;
     int pulse_count;
-    float vel;
-    float ALPHA = 1.0;
+    float vel = 0.0;
     while (1) 
     {
         if (ulTaskNotifyTake(pdTRUE, portTICK_PERIOD_MS)) {
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_unit, &pulse_count));
             pcnt_unit_clear_count(pcnt_unit);
             vel = pulse_count*MEAS_FREQ/4;
-            updateSamples(&plantBuffer, &estimatorBuffer, vel, estimator(&plantBuffer, &estimatorBuffer, plantArray, estimatorArray, ALPHA));
-            ESP_LOGI(TAG, "%f Hz", vel);
+            est = estimator(&plantBuffer, &inputBuffer, plantArray, inputArray, ALPHA);
+            updateSamples(&plantBuffer, vel);
+            ESP_LOGI(TAG, "RPM: %f Hz", vel);
             vTaskDelay(portTICK_PERIOD_MS);
         } 
     }
@@ -74,14 +76,21 @@ static void sample_task(void *arg)
 
 static void control_task(void *arg)
 {
-    float Kp = 1;
-    float setpoint = 0.0;
+    float Kp = 2.5;
+    float Ke = 1.0;
+    float setpoint = 1000.0;
+    float e = 0.0;
     float pwm = 0.0;
     while(1)
     {
-    	pwm = setpoint - newerValue(&plantBuffer);
-    	pwm = pwm*Kp + newerValue(&estimatorBuffer);
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, (int)pwm));
+    	e = setpoint - newerValue(&plantBuffer);
+    	ESP_LOGI(TAG, "erro: %f", e);
+		pwm = (e*Kp - Ke*est)/ALPHA;
+		pwm = (pwm < 0) ? 0 : pwm;
+		pwm = (pwm > 7000) ? 7000 : pwm;
+    	updateSamples(&inputBuffer, pwm);
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, (int32_t)pwm));
+        ESP_LOGI(TAG, "PWM: %f", pwm);
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
@@ -217,18 +226,11 @@ void app_main(void)
     // INICIALIZA VETORES E BUFFERS
 
     ESP_LOGI(TAG, "initialize arrays");
-    fillAbsoluteVectors(plantArray, estimatorArray);
-
+    fillAbsoluteVectors(plantArray, inputArray);
     ESP_LOGI(TAG, "initialize buffers");
 
-	initializeBuffer(&estimatorBuffer);
+	initializeBuffer(&inputBuffer);
 	initializeBuffer(&plantBuffer);
-
-    // VETOR DE ARGUMENTOS
-
-    void* args[2];
-    args[0] = pcnt_unit;
-    args[1] = queue;
 
     // INICIA TASK DE SINCRONIZAÇÃO
 

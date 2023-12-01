@@ -1,8 +1,8 @@
 #ifndef RINGBUFFER_H_
 #define RINGBUFFER_H_
 
-#define SAMPLING_SIZE 50 // pelo menos 20 amostras
-#define BUFFER_SIZE 51
+#define SAMPLING_SIZE 51 // pelo menos 20 amostras
+#define BUFFER_SIZE 52
 
 typedef struct ring_buffer
 {
