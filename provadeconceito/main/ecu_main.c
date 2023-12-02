@@ -20,7 +20,7 @@
 
 #define SYNC_TASK_PRIO 1
 #define SAMPLE_TASK_PRIO 2
-#define CONTROL_TASK_PRIO 2
+#define CONTROL_TASK_PRIO 4
 
 const static char *TAG = "ecu_main";
 
@@ -40,7 +40,7 @@ const static char *TAG = "ecu_main";
 #define ALPHA 					2.0
 
 #define TIMER_RES 10000
-#define ALARM_COUNT 2000
+#define ALARM_COUNT 1000
 const int MEAS_FREQ = TIMER_RES/ALARM_COUNT;
 
 static float inputArray[SAMPLING_SIZE];
@@ -53,11 +53,18 @@ static ring_buffer inputBuffer;
 // TASK DE MEDIÇÃO DE ROTAÇÃO
 
 float est = 0.0;
+float vel = 0.0;
 static void sample_task(void *arg)
 {
     pcnt_unit_handle_t pcnt_unit = arg;
+    float Kp = 2.0;
+    float Ki = 0.9;
+    float i = 0.0;
+    float Ke = 1.0;
+    float setpoint = 1000.0;
+    float e = 0.0;
+    float pwm = 0.0;
     int pulse_count;
-    float vel = 0.0;
     while (1) 
     {
         if (ulTaskNotifyTake(pdTRUE, portTICK_PERIOD_MS)) {
@@ -66,8 +73,17 @@ static void sample_task(void *arg)
             vel = pulse_count*MEAS_FREQ/4;
             est = estimator(&plantBuffer, &inputBuffer, plantArray, inputArray, ALPHA);
             updateSamples(&plantBuffer, vel);
-            ESP_LOGI(TAG, "RPM: %f Hz", vel);
-            vTaskDelay(portTICK_PERIOD_MS);
+            e = setpoint - newerValue(&plantBuffer);
+            i = (e < 50) ? 0: i + Ki*e;
+			pwm = (e*Kp - Ke*est + i)/ALPHA;
+			pwm = (pwm < 0) ? 0 : pwm;
+			pwm = (pwm > 7000) ? 7000 : pwm;
+			updateSamples(&inputBuffer, pwm);
+			ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, (int32_t)pwm));
+			//erro, integrador, pwm, rpm
+			ESP_LOGI(TAG, "%f, %f, %f, %f", e, i, pwm, vel);
+			ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+			vTaskDelay(portTICK_PERIOD_MS);
         } 
     }
 }
@@ -76,7 +92,8 @@ static void sample_task(void *arg)
 
 static void control_task(void *arg)
 {
-    float Kp = 2.5;
+	QueueHandle_t sampleQueue = arg;
+    float Kp = 2.0;
     float Ke = 1.0;
     float setpoint = 1000.0;
     float e = 0.0;
@@ -84,13 +101,13 @@ static void control_task(void *arg)
     while(1)
     {
     	e = setpoint - newerValue(&plantBuffer);
-    	ESP_LOGI(TAG, "erro: %f", e);
 		pwm = (e*Kp - Ke*est)/ALPHA;
 		pwm = (pwm < 0) ? 0 : pwm;
 		pwm = (pwm > 7000) ? 7000 : pwm;
     	updateSamples(&inputBuffer, pwm);
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, (int32_t)pwm));
-        ESP_LOGI(TAG, "PWM: %f", pwm);
+        //erro, pwm, rpm
+        ESP_LOGI(TAG, "%f, %f, %f", e, pwm, vel);
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
         vTaskDelay(portTICK_PERIOD_MS);
     }
@@ -101,8 +118,9 @@ static void control_task(void *arg)
 TaskHandle_t SAMPLE_TASK;
 static void sync_task(void *arg)
 {
+	QueueHandle_t sampleQueue = xQueueCreate(2, sizeof(float));
     xTaskCreatePinnedToCore(sample_task, "sample", 4096, arg, SAMPLE_TASK_PRIO, &SAMPLE_TASK, 0);
-    xTaskCreatePinnedToCore(control_task, "control", 4096, arg, CONTROL_TASK_PRIO, NULL, 1);
+    //xTaskCreatePinnedToCore(control_task, "control", 4096, (void*)sampleQueue, CONTROL_TASK_PRIO, NULL, 1);
     ESP_LOGI(TAG, "ALL TASKS STARTED");
     while(1)
     {

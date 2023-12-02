@@ -1,7 +1,7 @@
 #include "ring_buffer.h"
 #include "estimador.h"
 
-const float T = 10.0; // period
+const float T = 5.0; // period
 const float Ts = T/(SAMPLING_SIZE-1); // sample period
 const float absPlant = 60.0/T/T/T/T/T;
 const float absOutput = -30.0/T/T/T/T/T;
